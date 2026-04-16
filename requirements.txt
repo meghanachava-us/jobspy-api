@@ -1,4 +1,5 @@
+python-jobspy
 fastapi
 uvicorn
-python-jobspy
 pandas
+httpx
