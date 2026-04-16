@@ -27,60 +27,6 @@ LEVER_COMPANIES = [
 def root():
     return {"status": "JobSpy API is running"}
 
-async def fetch_linkedin_rss(client, query, location="United States"):
-    try:
-        q = query.replace(" ", "%20")
-        loc = location.replace(" ", "%20")
-        rss_url = f"https://www.linkedin.com/jobs/search.rss?keywords={q}&location={loc}&f_TPR=r86400"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        r = await client.get(rss_url, headers=headers, timeout=10)
-        if r.status_code != 200:
-            print(f"⚠️ LinkedIn RSS status: {r.status_code}")
-            return []
-
-        root = ET.fromstring(r.text)
-        jobs = []
-
-        for item in root.findall(".//item"):
-            title = item.findtext("title", "")
-            link = item.findtext("link", "")
-            description = item.findtext("description", "")
-            pub_date = item.findtext("pubDate", "None")
-            company = ""
-            location_text = ""
-
-            if " at " in title:
-                parts = title.split(" at ", 1)
-                role = parts[0].strip()
-                company_loc = parts[1].strip()
-                if " in " in company_loc:
-                    comp_parts = company_loc.split(" in ", 1)
-                    company = comp_parts[0].strip()
-                    location_text = comp_parts[1].strip()
-                else:
-                    company = company_loc
-            else:
-                role = title
-
-            jobs.append({
-                "company": company or "Unknown",
-                "role": role,
-                "location": location_text or location,
-                "link": link,
-                "description": description[:2000],
-                "posted": pub_date,
-                "source": "linkedin"
-            })
-
-        print(f"✅ LinkedIn RSS: {len(jobs)} jobs found")
-        return jobs
-
-    except Exception as e:
-        print(f"❌ LinkedIn RSS failed: {str(e)}")
-        return []
-
 async def fetch_greenhouse_jobs(client, company, keywords):
     try:
         url = f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true"
@@ -148,19 +94,28 @@ async def get_jobs(
     keywords = query.split()
     all_jobs = []
 
-    # --- JobSpy: Indeed, ZipRecruiter, Glassdoor ---
-    sites = ["indeed", "zip_recruiter", "glassdoor"]
-    for site in sites:
+    # --- JobSpy: Indeed, ZipRecruiter, Glassdoor, Google Jobs ---
+    # Google Jobs indexes LinkedIn + 100s of other job boards
+    jobspy_sites = ["indeed", "zip_recruiter", "glassdoor", "google"]
+    
+    for site in jobspy_sites:
         try:
-            jobs = scrape_jobs(
+            kwargs = dict(
                 site_name=[site],
                 search_term=query,
                 location=location,
-                results_wanted=results // len(sites),
+                results_wanted=results // len(jobspy_sites),
                 hours_old=hours_old,
                 country_indeed="USA",
                 verbose=1
             )
+            # Google Jobs needs a specific search term format
+            if site == "google":
+                kwargs["google_search_term"] = f"{query} jobs in United States"
+                kwargs.pop("location", None)
+
+            jobs = scrape_jobs(**kwargs)
+
             if jobs is not None and not jobs.empty:
                 for _, row in jobs.iterrows():
                     all_jobs.append({
@@ -173,13 +128,16 @@ async def get_jobs(
                         "source": str(row.get("site", site))
                     })
                 print(f"✅ {site}: {len(jobs)} jobs found")
+            else:
+                print(f"⚠️ {site}: 0 jobs found")
+
         except Exception as e:
             print(f"❌ {site} failed: {str(e)}")
             continue
 
-    # --- LinkedIn RSS + Greenhouse + Lever in parallel ---
+    # --- Greenhouse + Lever in parallel ---
     async with httpx.AsyncClient() as client:
-        tasks = [fetch_linkedin_rss(client, query, location)]
+        tasks = []
         tasks += [fetch_greenhouse_jobs(client, c, keywords) for c in GREENHOUSE_COMPANIES]
         tasks += [fetch_lever_jobs(client, c, keywords) for c in LEVER_COMPANIES]
 
