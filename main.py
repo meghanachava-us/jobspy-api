@@ -35,12 +35,20 @@ ROLE_KEYWORDS = [
     "node engineer", "aws engineer"
 ]
 
+# Multiple Google search queries to get more results
+GOOGLE_QUERIES = [
+    "software engineer React AWS jobs USA",
+    "full stack engineer TypeScript jobs USA",
+    "frontend engineer React jobs United States",
+    "backend engineer AWS jobs United States",
+    "software developer TypeScript React jobs USA",
+]
+
 @app.get("/")
 def root():
     return {"status": "JobSpy API is running"}
 
 def matches_role(title: str) -> bool:
-    """Check if job title matches any core role keyword"""
     title_lower = title.lower()
     return any(kw in title_lower for kw in ROLE_KEYWORDS)
 
@@ -60,7 +68,6 @@ async def fetch_greenhouse_jobs(client, company):
             location_text = ""
             if job.get("location"):
                 location_text = job["location"].get("name", "")
-            # Skip non-US locations
             if any(country in location_text.lower() for country in [
                 "canada", "uk", "india", "germany", "france",
                 "australia", "poland", "ireland", "israel"
@@ -96,7 +103,6 @@ async def fetch_lever_jobs(client, company):
             if not matches_role(title):
                 continue
             location_text = job.get("categories", {}).get("location", "")
-            # Skip non-US locations
             if any(country in location_text.lower() for country in [
                 "canada", "uk", "india", "germany", "france",
                 "australia", "poland", "ireland", "israel"
@@ -119,6 +125,26 @@ async def fetch_lever_jobs(client, company):
         print(f"❌ Lever {company}: {str(e)}")
         return []
 
+def scrape_google_jobs(query_str, hours_old):
+    """Scrape Google Jobs with a single query string"""
+    try:
+        jobs = scrape_jobs(
+            site_name=["google"],
+            google_search_term=query_str,
+            results_wanted=10,
+            hours_old=hours_old,
+            verbose=0
+        )
+        if jobs is not None and not jobs.empty:
+            print(f"✅ Google [{query_str[:40]}]: {len(jobs)} jobs")
+            return jobs
+        else:
+            print(f"⚠️ Google [{query_str[:40]}]: 0 jobs")
+            return None
+    except Exception as e:
+        print(f"❌ Google [{query_str[:40]}]: {str(e)}")
+        return None
+
 @app.get("/jobs")
 async def get_jobs(
     query: str = Query(default="software engineer AWS"),
@@ -128,50 +154,55 @@ async def get_jobs(
 ):
     all_jobs = []
 
-    # --- JobSpy: Indeed, ZipRecruiter, Google Jobs ---
-    # Removed glassdoor (consistently blocked)
-    # Google Jobs aggregates LinkedIn + 100s of boards
-    jobspy_sites = ["indeed", "zip_recruiter", "google"]
+    # --- Indeed (most reliable) ---
+    try:
+        jobs = scrape_jobs(
+            site_name=["indeed"],
+            search_term=query,
+            location=location,
+            results_wanted=25,
+            hours_old=hours_old,
+            country_indeed="USA",
+            verbose=1
+        )
+        if jobs is not None and not jobs.empty:
+            for _, row in jobs.iterrows():
+                all_jobs.append({
+                    "company": str(row.get("company", "Unknown")),
+                    "role": str(row.get("title", "Unknown")),
+                    "location": str(row.get("location", "USA")),
+                    "link": str(row.get("job_url", "")),
+                    "description": str(row.get("description", ""))[:2000],
+                    "posted": str(row.get("date_posted", "N/A")),
+                    "source": "indeed"
+                })
+            print(f"✅ Indeed: {len(jobs)} jobs found")
+        else:
+            print(f"⚠️ Indeed: 0 jobs found")
+    except Exception as e:
+        print(f"❌ Indeed failed: {str(e)}")
 
-    for site in jobspy_sites:
-        try:
-            if site == "google":
-                jobs = scrape_jobs(
-                    site_name=["google"],
-                    google_search_term=f"software engineer jobs in United States",
-                    results_wanted=15,
-                    hours_old=hours_old,
-                    verbose=1
-                )
-            else:
-                jobs = scrape_jobs(
-                    site_name=[site],
-                    search_term=query,
-                    location=location,
-                    results_wanted=15,
-                    hours_old=hours_old,
-                    country_indeed="USA",
-                    verbose=1
-                )
+    # --- Google Jobs (multiple queries to bypass 10-result limit) ---
+    google_dfs = []
+    for gq in GOOGLE_QUERIES:
+        result = scrape_google_jobs(gq, hours_old)
+        if result is not None:
+            google_dfs.append(result)
 
-            if jobs is not None and not jobs.empty:
-                for _, row in jobs.iterrows():
-                    all_jobs.append({
-                        "company": str(row.get("company", "Unknown")),
-                        "role": str(row.get("title", "Unknown")),
-                        "location": str(row.get("location", "USA")),
-                        "link": str(row.get("job_url", "")),
-                        "description": str(row.get("description", ""))[:2000],
-                        "posted": str(row.get("date_posted", "N/A")),
-                        "source": str(row.get("site", site))
-                    })
-                print(f"✅ {site}: {len(jobs)} jobs found")
-            else:
-                print(f"⚠️ {site}: 0 jobs found")
-
-        except Exception as e:
-            print(f"❌ {site} failed: {str(e)}")
-            continue
+    if google_dfs:
+        combined_google = pd.concat(google_dfs, ignore_index=True)
+        combined_google = combined_google.drop_duplicates(subset=["title", "company"], keep="first")
+        for _, row in combined_google.iterrows():
+            all_jobs.append({
+                "company": str(row.get("company", "Unknown")),
+                "role": str(row.get("title", "Unknown")),
+                "location": str(row.get("location", "USA")),
+                "link": str(row.get("job_url", "")),
+                "description": str(row.get("description", ""))[:2000],
+                "posted": str(row.get("date_posted", "N/A")),
+                "source": "google"
+            })
+        print(f"✅ Google total: {len(combined_google)} unique jobs")
 
     # --- Greenhouse + Lever in parallel ---
     async with httpx.AsyncClient() as client:
@@ -182,7 +213,7 @@ async def get_jobs(
         for job_list in results_list:
             all_jobs.extend(job_list)
 
-    # Deduplicate
+    # Deduplicate all sources
     seen = set()
     unique_jobs = []
     for job in all_jobs:
