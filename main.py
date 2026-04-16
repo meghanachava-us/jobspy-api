@@ -1,3 +1,14 @@
+from fastapi import FastAPI, Query
+from jobspy import scrape_jobs
+import pandas as pd
+import uvicorn
+
+app = FastAPI()
+
+@app.get("/")
+def root():
+    return {"status": "JobSpy API is running"}
+
 @app.get("/jobs")
 def get_jobs(
     query: str = Query(default="software engineer AWS"),
@@ -7,16 +18,15 @@ def get_jobs(
 ):
     all_jobs = []
 
-    # Scrape each site separately so one failure doesn't kill others
     sites = ["indeed", "linkedin", "zip_recruiter", "glassdoor"]
-    
+
     for site in sites:
         try:
             jobs = scrape_jobs(
                 site_name=[site],
                 search_term=query,
                 location=location,
-                results_wanted=results // len(sites),  # split evenly
+                results_wanted=results // len(sites),
                 hours_old=hours_old,
                 country_indeed="USA",
                 linkedin_fetch_description=True,
@@ -29,18 +39,15 @@ def get_jobs(
                 print(f"⚠️ {site}: 0 jobs found")
         except Exception as e:
             print(f"❌ {site} failed: {str(e)}")
-            continue  # skip failed site, continue with others
+            continue
 
     if not all_jobs:
         return {"jobs": [], "total": 0}
 
-    # Combine all results
-    import pandas as pd
     combined = pd.concat(all_jobs, ignore_index=True)
-    
-    # Deduplicate by title + company
+
     combined = combined.drop_duplicates(
-        subset=["title", "company"], 
+        subset=["title", "company"],
         keep="first"
     )
 
@@ -57,3 +64,6 @@ def get_jobs(
         })
 
     return {"jobs": result, "total": len(result)}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
