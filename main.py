@@ -9,61 +9,68 @@ app = FastAPI()
 
 # Confirmed working Greenhouse slugs
 GREENHOUSE_COMPANIES = [
+    # Confirmed working
     "airbnb", "figma", "dropbox", "twitch", "coinbase",
     "robinhood", "stripe", "brex", "airtable", "lattice",
     "gusto", "checkr", "databricks", "hubspot",
     "squarespace", "duolingo", "asana", "lyft",
     "pinterest", "discord", "klaviyo", "datadog",
-    "instacart", "amplitude", "mixpanel",
-    # Fixed slugs
-    "doordashusa",        # was "doordash"
-    "plaid",              # try original again
-    "rippling",           # try original again  
-    "notion",             # try original again
-    "snowflake",          # try original again
-    "palantir",           # try original again
-    "retool",             # try original again
-    # New additions
-    "uber", "lyft", "roblox", "snap",
-    "mongodb", "confluent", "cloudflare",
-    "gitlab", "hashicorp-inc", "grafana",
-    "samsara", "anduril", "verkada",
-    "gleanwork", "ramp"
+    "instacart", "amplitude", "mixpanel", "doordashusa",
+    "gleanwork", "verkada", "gitlab", "roblox",
+    "mongodb", "samsara", "cloudflare",
+    # Fixed/new slugs
+    "anthropic",              # confirmed: job-boards.greenhouse.io/anthropic
+    "palantir",               # try job-boards prefix
+    "snowflake",
+    "uber",
+    "rippling",
+    "notion",
+    "retool",
+    "snap",
+    "confluent",
+    "ramp",
+    "hashicorp",
+    "grafana",
+    "anduril",
+    # More companies
+    "shopify", "twilio", "okta", "zendesk",
+    "docusign", "box", "workday", "atlassian",
+    "pagerduty", "fastly", "elastic",
 ]
 
 # Confirmed working Lever slugs
 LEVER_COMPANIES = [
-    "mistral",  # only confirmed working one
-    # Try fixed slugs
+    "mistral",
     "netflix",
-    "openai",
-    "scale-ai",
     "anyscale",
-    "sourcegraph",
 ]
 
-# Companies using Ashby ATS
+# Companies using Ashby ATS - correct slugs
 ASHBY_COMPANIES = [
-    "anthropic",
-    "openai",
+    # Confirmed working
+    "pinecone", "linear", "supabase", "modal",
+    "cursor", "langchain", "cohere", "replit", "perplexity",
+    # Fixed slugs
+    "openai",                 # confirmed: jobs.ashbyhq.com/openai
     "vercel",
-    "linear",
-    "supabase",
-    "perplexity",
-    "cohere",
-    "replit",
-    "cursor",
-    "codeium",
-    "modal",
-    "replicate",
     "huggingface",
-    "together",
+    "replicate",
+    "codeium",
     "weights-biases",
-    "langchain",
-    "pinecone",
-    "weaviate",
-    "qdrant",
+    "together-ai",
     "chroma",
+    "qdrant",
+    "weaviate",
+    # New AI companies on Ashby
+    "mistral-ai",
+    "elevenlabs",
+    "midjourney",
+    "stability-ai",
+    "scale-ai",
+    "anduril-industries",
+    "glean",
+    "notion",
+    "figma",
 ]
 
 ROLE_KEYWORDS = [
@@ -91,19 +98,28 @@ def is_excluded_location(location_text: str) -> bool:
         "canada", "uk", "india", "germany", "france",
         "australia", "poland", "ireland", "israel",
         "toronto", "ontario", "warsaw", "london",
-        "berlin", "paris", "amsterdam", "dublin"
+        "berlin", "paris", "amsterdam", "dublin",
+        "singapore", "japan", "mexico", "brazil"
     ]
     loc_lower = location_text.lower()
     return any(c in loc_lower for c in excluded)
 
 async def fetch_greenhouse_jobs(client, company):
     try:
-        url = f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true"
-        r = await client.get(url, timeout=10)
-        if r.status_code != 200:
+        # Try both API endpoints (old and new)
+        urls = [
+            f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true",
+            f"https://job-boards.greenhouse.io/{company}/jobs"
+        ]
+        data = None
+        for url in urls[:1]:  # try primary first
+            r = await client.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                break
+        if not data:
             print(f"⚠️ Greenhouse {company}: status {r.status_code}")
             return []
-        data = r.json()
         jobs = []
         for job in data.get("jobs", []):
             title = job.get("title", "")
@@ -164,7 +180,6 @@ async def fetch_lever_jobs(client, company):
         return []
 
 async def fetch_ashby_jobs(client, company):
-    """Ashby ATS - used by Anthropic, OpenAI, Vercel, Linear etc."""
     try:
         url = f"https://api.ashbyhq.com/posting-api/job-board/{company}"
         r = await client.get(url, timeout=10)
@@ -206,7 +221,7 @@ async def get_jobs(
 ):
     all_jobs = []
 
-    # --- Indeed (most reliable) ---
+    # --- Indeed ---
     try:
         jobs = scrape_jobs(
             site_name=["indeed"],
