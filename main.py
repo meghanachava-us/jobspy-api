@@ -8,21 +8,34 @@ import uvicorn
 app = FastAPI()
 
 GREENHOUSE_COMPANIES = [
+    # Confirmed working
     "airbnb", "figma", "dropbox", "twitch", "coinbase",
-    "robinhood", "plaid", "stripe", "brex", "rippling",
-    "notion", "airtable", "lattice", "gusto", "checkr",
-    "palantir", "databricks", "snowflake", "hubspot", "zendesk",
-    "squarespace", "duolingo", "canva", "asana", "monday"
+    "robinhood", "stripe", "brex", "airtable", "lattice",
+    "gusto", "checkr", "databricks", "hubspot",
+    "squarespace", "duolingo", "asana",
+    # Fixed slugs
+    "plaid-inc", "rippling-inc", "notionlabs",
+    "mondaydotcom", "zendesk-inc", "snowflake-computing",
+    "canvapeople", "palantir-technologies",
+    # New additions
+    "lyft", "doordash", "instacart", "pinterest",
+    "discord", "klaviyo", "datadog",
+    "hashicorp", "grafana-labs", "retool",
+    "amplitude", "mixpanel"
 ]
 
 LEVER_COMPANIES = [
-    "netflix", "reddit", "scale-ai", "openai", "anthropic",
-    "cohere", "mistral", "perplexity", "together-ai", "anyscale",
-    "weights-biases", "huggingface", "modal-labs", "replicate",
-    "cursor", "codeium", "sourcegraph", "linear", "vercel", "supabase"
+    # Confirmed working
+    "mistral",
+    # Fixed/new slugs
+    "netflix", "openai", "anthropic",
+    "perplexity-ai", "scale-ai", "anyscale",
+    "huggingface", "cohere-inc", "sourcegraph",
+    "linear", "vercel", "supabase", "replicate",
+    "modal", "wandb", "codeium", "cursor",
+    "together-computer"
 ]
 
-# Core role keywords to match against job titles
 ROLE_KEYWORDS = [
     "software engineer", "software developer",
     "frontend engineer", "backend engineer",
@@ -33,15 +46,6 @@ ROLE_KEYWORDS = [
     "cloud engineer", "platform engineer",
     "systems engineer", "react developer",
     "node engineer", "aws engineer"
-]
-
-# Multiple Google search queries to get more results
-GOOGLE_QUERIES = [
-    "software engineer React AWS jobs USA",
-    "full stack engineer TypeScript jobs USA",
-    "frontend engineer React jobs United States",
-    "backend engineer AWS jobs United States",
-    "software developer TypeScript React jobs USA",
 ]
 
 @app.get("/")
@@ -125,26 +129,6 @@ async def fetch_lever_jobs(client, company):
         print(f"❌ Lever {company}: {str(e)}")
         return []
 
-def scrape_google_jobs(query_str, hours_old):
-    """Scrape Google Jobs with a single query string"""
-    try:
-        jobs = scrape_jobs(
-            site_name=["google"],
-            google_search_term=query_str,
-            results_wanted=10,
-            hours_old=hours_old,
-            verbose=0
-        )
-        if jobs is not None and not jobs.empty:
-            print(f"✅ Google [{query_str[:40]}]: {len(jobs)} jobs")
-            return jobs
-        else:
-            print(f"⚠️ Google [{query_str[:40]}]: 0 jobs")
-            return None
-    except Exception as e:
-        print(f"❌ Google [{query_str[:40]}]: {str(e)}")
-        return None
-
 @app.get("/jobs")
 async def get_jobs(
     query: str = Query(default="software engineer AWS"),
@@ -154,7 +138,7 @@ async def get_jobs(
 ):
     all_jobs = []
 
-    # --- Indeed (most reliable) ---
+    # --- Indeed only from JobSpy (most reliable) ---
     try:
         jobs = scrape_jobs(
             site_name=["indeed"],
@@ -182,28 +166,6 @@ async def get_jobs(
     except Exception as e:
         print(f"❌ Indeed failed: {str(e)}")
 
-    # --- Google Jobs (multiple queries to bypass 10-result limit) ---
-    google_dfs = []
-    for gq in GOOGLE_QUERIES:
-        result = scrape_google_jobs(gq, hours_old)
-        if result is not None:
-            google_dfs.append(result)
-
-    if google_dfs:
-        combined_google = pd.concat(google_dfs, ignore_index=True)
-        combined_google = combined_google.drop_duplicates(subset=["title", "company"], keep="first")
-        for _, row in combined_google.iterrows():
-            all_jobs.append({
-                "company": str(row.get("company", "Unknown")),
-                "role": str(row.get("title", "Unknown")),
-                "location": str(row.get("location", "USA")),
-                "link": str(row.get("job_url", "")),
-                "description": str(row.get("description", ""))[:2000],
-                "posted": str(row.get("date_posted", "N/A")),
-                "source": "google"
-            })
-        print(f"✅ Google total: {len(combined_google)} unique jobs")
-
     # --- Greenhouse + Lever in parallel ---
     async with httpx.AsyncClient() as client:
         tasks = []
@@ -213,7 +175,7 @@ async def get_jobs(
         for job_list in results_list:
             all_jobs.extend(job_list)
 
-    # Deduplicate all sources
+    # Deduplicate
     seen = set()
     unique_jobs = []
     for job in all_jobs:
