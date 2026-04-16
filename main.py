@@ -7,33 +7,63 @@ import uvicorn
 
 app = FastAPI()
 
+# Confirmed working Greenhouse slugs
 GREENHOUSE_COMPANIES = [
-    # Confirmed working
     "airbnb", "figma", "dropbox", "twitch", "coinbase",
     "robinhood", "stripe", "brex", "airtable", "lattice",
     "gusto", "checkr", "databricks", "hubspot",
-    "squarespace", "duolingo", "asana",
+    "squarespace", "duolingo", "asana", "lyft",
+    "pinterest", "discord", "klaviyo", "datadog",
+    "instacart", "amplitude", "mixpanel",
     # Fixed slugs
-    "plaid-inc", "rippling-inc", "notionlabs",
-    "mondaydotcom", "zendesk-inc", "snowflake-computing",
-    "canvapeople", "palantir-technologies",
+    "doordashusa",        # was "doordash"
+    "plaid",              # try original again
+    "rippling",           # try original again  
+    "notion",             # try original again
+    "snowflake",          # try original again
+    "palantir",           # try original again
+    "retool",             # try original again
     # New additions
-    "lyft", "doordash", "instacart", "pinterest",
-    "discord", "klaviyo", "datadog",
-    "hashicorp", "grafana-labs", "retool",
-    "amplitude", "mixpanel"
+    "uber", "lyft", "roblox", "snap",
+    "mongodb", "confluent", "cloudflare",
+    "gitlab", "hashicorp-inc", "grafana",
+    "samsara", "anduril", "verkada",
+    "gleanwork", "ramp"
 ]
 
+# Confirmed working Lever slugs
 LEVER_COMPANIES = [
-    # Confirmed working
-    "mistral",
-    # Fixed/new slugs
-    "netflix", "openai", "anthropic",
-    "perplexity-ai", "scale-ai", "anyscale",
-    "huggingface", "cohere-inc", "sourcegraph",
-    "linear", "vercel", "supabase", "replicate",
-    "modal", "wandb", "codeium", "cursor",
-    "together-computer"
+    "mistral",  # only confirmed working one
+    # Try fixed slugs
+    "netflix",
+    "openai",
+    "scale-ai",
+    "anyscale",
+    "sourcegraph",
+]
+
+# Companies using Ashby ATS
+ASHBY_COMPANIES = [
+    "anthropic",
+    "openai",
+    "vercel",
+    "linear",
+    "supabase",
+    "perplexity",
+    "cohere",
+    "replit",
+    "cursor",
+    "codeium",
+    "modal",
+    "replicate",
+    "huggingface",
+    "together",
+    "weights-biases",
+    "langchain",
+    "pinecone",
+    "weaviate",
+    "qdrant",
+    "chroma",
 ]
 
 ROLE_KEYWORDS = [
@@ -56,6 +86,16 @@ def matches_role(title: str) -> bool:
     title_lower = title.lower()
     return any(kw in title_lower for kw in ROLE_KEYWORDS)
 
+def is_excluded_location(location_text: str) -> bool:
+    excluded = [
+        "canada", "uk", "india", "germany", "france",
+        "australia", "poland", "ireland", "israel",
+        "toronto", "ontario", "warsaw", "london",
+        "berlin", "paris", "amsterdam", "dublin"
+    ]
+    loc_lower = location_text.lower()
+    return any(c in loc_lower for c in excluded)
+
 async def fetch_greenhouse_jobs(client, company):
     try:
         url = f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true"
@@ -72,10 +112,7 @@ async def fetch_greenhouse_jobs(client, company):
             location_text = ""
             if job.get("location"):
                 location_text = job["location"].get("name", "")
-            if any(country in location_text.lower() for country in [
-                "canada", "uk", "india", "germany", "france",
-                "australia", "poland", "ireland", "israel"
-            ]):
+            if is_excluded_location(location_text):
                 continue
             jobs.append({
                 "company": company.replace("-", " ").title(),
@@ -107,10 +144,7 @@ async def fetch_lever_jobs(client, company):
             if not matches_role(title):
                 continue
             location_text = job.get("categories", {}).get("location", "")
-            if any(country in location_text.lower() for country in [
-                "canada", "uk", "india", "germany", "france",
-                "australia", "poland", "ireland", "israel"
-            ]):
+            if is_excluded_location(location_text):
                 continue
             description = job.get("descriptionPlain", "")[:2000]
             jobs.append({
@@ -129,6 +163,40 @@ async def fetch_lever_jobs(client, company):
         print(f"❌ Lever {company}: {str(e)}")
         return []
 
+async def fetch_ashby_jobs(client, company):
+    """Ashby ATS - used by Anthropic, OpenAI, Vercel, Linear etc."""
+    try:
+        url = f"https://api.ashbyhq.com/posting-api/job-board/{company}"
+        r = await client.get(url, timeout=10)
+        if r.status_code != 200:
+            print(f"⚠️ Ashby {company}: status {r.status_code}")
+            return []
+        data = r.json()
+        jobs = []
+        for job in data.get("jobs", []):
+            title = job.get("title", "")
+            if not matches_role(title):
+                continue
+            location_text = job.get("location", "") or ""
+            if is_excluded_location(location_text):
+                continue
+            description = job.get("descriptionHtml", "") or job.get("description", "")
+            jobs.append({
+                "company": company.replace("-", " ").title(),
+                "role": title,
+                "location": location_text,
+                "link": job.get("jobUrl", ""),
+                "description": description[:2000],
+                "posted": job.get("publishedAt", "None"),
+                "source": "ashby"
+            })
+        if jobs:
+            print(f"✅ Ashby {company}: {len(jobs)} jobs")
+        return jobs
+    except Exception as e:
+        print(f"❌ Ashby {company}: {str(e)}")
+        return []
+
 @app.get("/jobs")
 async def get_jobs(
     query: str = Query(default="software engineer AWS"),
@@ -138,7 +206,7 @@ async def get_jobs(
 ):
     all_jobs = []
 
-    # --- Indeed only from JobSpy (most reliable) ---
+    # --- Indeed (most reliable) ---
     try:
         jobs = scrape_jobs(
             site_name=["indeed"],
@@ -166,11 +234,12 @@ async def get_jobs(
     except Exception as e:
         print(f"❌ Indeed failed: {str(e)}")
 
-    # --- Greenhouse + Lever in parallel ---
+    # --- Greenhouse + Lever + Ashby in parallel ---
     async with httpx.AsyncClient() as client:
         tasks = []
         tasks += [fetch_greenhouse_jobs(client, c) for c in GREENHOUSE_COMPANIES]
         tasks += [fetch_lever_jobs(client, c) for c in LEVER_COMPANIES]
+        tasks += [fetch_ashby_jobs(client, c) for c in ASHBY_COMPANIES]
         results_list = await asyncio.gather(*tasks)
         for job_list in results_list:
             all_jobs.extend(job_list)
