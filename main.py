@@ -1,14 +1,3 @@
-from fastapi import FastAPI, Query
-from jobspy import scrape_jobs
-import pandas as pd
-import uvicorn
-
-app = FastAPI()
-
-@app.get("/")
-def root():
-    return {"status": "JobSpy API is running"}
-
 @app.get("/jobs")
 def get_jobs(
     query: str = Query(default="software engineer AWS"),
@@ -16,36 +5,55 @@ def get_jobs(
     hours_old: int = Query(default=24),
     results: int = Query(default=50)
 ):
-    try:
-        jobs = scrape_jobs(
-            site_name=["linkedin", "indeed", "zip_recruiter", "glassdoor"],
-            search_term=query,
-            location=location,
-            results_wanted=results,
-            hours_old=hours_old,
-            country_indeed="USA",
-            linkedin_fetch_description=True
-        )
+    all_jobs = []
 
-        if jobs is None or jobs.empty:
-            return {"jobs": [], "total": 0}
+    # Scrape each site separately so one failure doesn't kill others
+    sites = ["indeed", "linkedin", "zip_recruiter", "glassdoor"]
+    
+    for site in sites:
+        try:
+            jobs = scrape_jobs(
+                site_name=[site],
+                search_term=query,
+                location=location,
+                results_wanted=results // len(sites),  # split evenly
+                hours_old=hours_old,
+                country_indeed="USA",
+                linkedin_fetch_description=True,
+                verbose=1
+            )
+            if jobs is not None and not jobs.empty:
+                all_jobs.append(jobs)
+                print(f"✅ {site}: {len(jobs)} jobs found")
+            else:
+                print(f"⚠️ {site}: 0 jobs found")
+        except Exception as e:
+            print(f"❌ {site} failed: {str(e)}")
+            continue  # skip failed site, continue with others
 
-        result = []
-        for _, row in jobs.iterrows():
-            result.append({
-                "company":     str(row.get("company", "Unknown")),
-                "role":        str(row.get("title", "Unknown")),
-                "location":    str(row.get("location", "USA")),
-                "link":        str(row.get("job_url", "")),
-                "description": str(row.get("description", ""))[:2000],
-                "posted":      str(row.get("date_posted", "N/A")),
-                "source":      str(row.get("site", "Unknown"))
-            })
+    if not all_jobs:
+        return {"jobs": [], "total": 0}
 
-        return {"jobs": result, "total": len(result)}
+    # Combine all results
+    import pandas as pd
+    combined = pd.concat(all_jobs, ignore_index=True)
+    
+    # Deduplicate by title + company
+    combined = combined.drop_duplicates(
+        subset=["title", "company"], 
+        keep="first"
+    )
 
-    except Exception as e:
-        return {"error": str(e), "jobs": [], "total": 0}
+    result = []
+    for _, row in combined.iterrows():
+        result.append({
+            "company":     str(row.get("company", "Unknown")),
+            "role":        str(row.get("title", "Unknown")),
+            "location":    str(row.get("location", "USA")),
+            "link":        str(row.get("job_url", "")),
+            "description": str(row.get("description", ""))[:2000],
+            "posted":      str(row.get("date_posted", "N/A")),
+            "source":      str(row.get("site", "Unknown"))
+        })
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {"jobs": result, "total": len(result)}
