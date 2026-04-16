@@ -3,7 +3,6 @@ from jobspy import scrape_jobs
 import pandas as pd
 import httpx
 import asyncio
-from xml.etree import ElementTree as ET
 import uvicorn
 
 app = FastAPI()
@@ -23,25 +22,50 @@ LEVER_COMPANIES = [
     "cursor", "codeium", "sourcegraph", "linear", "vercel", "supabase"
 ]
 
+# Core role keywords to match against job titles
+ROLE_KEYWORDS = [
+    "software engineer", "software developer",
+    "frontend engineer", "backend engineer",
+    "full stack", "fullstack",
+    "devops engineer", "sre", "site reliability",
+    "machine learning engineer", "ml engineer",
+    "ai engineer", "llm engineer",
+    "cloud engineer", "platform engineer",
+    "systems engineer", "react developer",
+    "node engineer", "aws engineer"
+]
+
 @app.get("/")
 def root():
     return {"status": "JobSpy API is running"}
 
-async def fetch_greenhouse_jobs(client, company, keywords):
+def matches_role(title: str) -> bool:
+    """Check if job title matches any core role keyword"""
+    title_lower = title.lower()
+    return any(kw in title_lower for kw in ROLE_KEYWORDS)
+
+async def fetch_greenhouse_jobs(client, company):
     try:
         url = f"https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true"
-        r = await client.get(url, timeout=8)
+        r = await client.get(url, timeout=10)
         if r.status_code != 200:
+            print(f"⚠️ Greenhouse {company}: status {r.status_code}")
             return []
         data = r.json()
         jobs = []
         for job in data.get("jobs", []):
             title = job.get("title", "")
-            if not any(k.lower() in title.lower() for k in keywords):
+            if not matches_role(title):
                 continue
             location_text = ""
             if job.get("location"):
                 location_text = job["location"].get("name", "")
+            # Skip non-US locations
+            if any(country in location_text.lower() for country in [
+                "canada", "uk", "india", "germany", "france",
+                "australia", "poland", "ireland", "israel"
+            ]):
+                continue
             jobs.append({
                 "company": company.replace("-", " ").title(),
                 "role": title,
@@ -51,24 +75,33 @@ async def fetch_greenhouse_jobs(client, company, keywords):
                 "posted": "None",
                 "source": "greenhouse"
             })
+        if jobs:
+            print(f"✅ Greenhouse {company}: {len(jobs)} jobs")
         return jobs
     except Exception as e:
         print(f"❌ Greenhouse {company}: {str(e)}")
         return []
 
-async def fetch_lever_jobs(client, company, keywords):
+async def fetch_lever_jobs(client, company):
     try:
         url = f"https://api.lever.co/v0/postings/{company}?mode=json"
-        r = await client.get(url, timeout=8)
+        r = await client.get(url, timeout=10)
         if r.status_code != 200:
+            print(f"⚠️ Lever {company}: status {r.status_code}")
             return []
         data = r.json()
         jobs = []
         for job in data:
             title = job.get("text", "")
-            if not any(k.lower() in title.lower() for k in keywords):
+            if not matches_role(title):
                 continue
             location_text = job.get("categories", {}).get("location", "")
+            # Skip non-US locations
+            if any(country in location_text.lower() for country in [
+                "canada", "uk", "india", "germany", "france",
+                "australia", "poland", "ireland", "israel"
+            ]):
+                continue
             description = job.get("descriptionPlain", "")[:2000]
             jobs.append({
                 "company": company.replace("-", " ").title(),
@@ -79,6 +112,8 @@ async def fetch_lever_jobs(client, company, keywords):
                 "posted": "None",
                 "source": "lever"
             })
+        if jobs:
+            print(f"✅ Lever {company}: {len(jobs)} jobs")
         return jobs
     except Exception as e:
         print(f"❌ Lever {company}: {str(e)}")
@@ -91,30 +126,33 @@ async def get_jobs(
     hours_old: int = Query(default=24),
     results: int = Query(default=50)
 ):
-    keywords = query.split()
     all_jobs = []
 
-    # --- JobSpy: Indeed, ZipRecruiter, Glassdoor, Google Jobs ---
-    # Google Jobs indexes LinkedIn + 100s of other job boards
-    jobspy_sites = ["indeed", "zip_recruiter", "glassdoor", "google"]
-    
+    # --- JobSpy: Indeed, ZipRecruiter, Google Jobs ---
+    # Removed glassdoor (consistently blocked)
+    # Google Jobs aggregates LinkedIn + 100s of boards
+    jobspy_sites = ["indeed", "zip_recruiter", "google"]
+
     for site in jobspy_sites:
         try:
-            kwargs = dict(
-                site_name=[site],
-                search_term=query,
-                location=location,
-                results_wanted=results // len(jobspy_sites),
-                hours_old=hours_old,
-                country_indeed="USA",
-                verbose=1
-            )
-            # Google Jobs needs a specific search term format
             if site == "google":
-                kwargs["google_search_term"] = f"{query} jobs in United States"
-                kwargs.pop("location", None)
-
-            jobs = scrape_jobs(**kwargs)
+                jobs = scrape_jobs(
+                    site_name=["google"],
+                    google_search_term=f"software engineer jobs in United States",
+                    results_wanted=15,
+                    hours_old=hours_old,
+                    verbose=1
+                )
+            else:
+                jobs = scrape_jobs(
+                    site_name=[site],
+                    search_term=query,
+                    location=location,
+                    results_wanted=15,
+                    hours_old=hours_old,
+                    country_indeed="USA",
+                    verbose=1
+                )
 
             if jobs is not None and not jobs.empty:
                 for _, row in jobs.iterrows():
@@ -138,9 +176,8 @@ async def get_jobs(
     # --- Greenhouse + Lever in parallel ---
     async with httpx.AsyncClient() as client:
         tasks = []
-        tasks += [fetch_greenhouse_jobs(client, c, keywords) for c in GREENHOUSE_COMPANIES]
-        tasks += [fetch_lever_jobs(client, c, keywords) for c in LEVER_COMPANIES]
-
+        tasks += [fetch_greenhouse_jobs(client, c) for c in GREENHOUSE_COMPANIES]
+        tasks += [fetch_lever_jobs(client, c) for c in LEVER_COMPANIES]
         results_list = await asyncio.gather(*tasks)
         for job_list in results_list:
             all_jobs.extend(job_list)
